@@ -54,7 +54,7 @@ else
     exceptions "неизвестный формат файла" 5
 fi 
 
-mv "$outputName" "$otu_dir/$outputName"
+mv "$outputName" "$out_dir/$outputName"
 
 echo "Сборка завершена успешно"
 exit 0
