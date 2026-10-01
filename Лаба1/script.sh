@@ -11,19 +11,22 @@ outputName=""
 
 if [ $# -eq 0 ]; then exceptions "укажите файл" 1; fi
 
-abs_file=$(realpath "$file")
-src_dir=$(dirname "$abs_file")
+out_dir=$(pwd)
+case "$file" in
+    /*) abs_file="$file" ;;
+    *) abs_file="$out_dir/$file" ;;
+esac
 
 if [ ! -r "$abs_file" ]; then exceptions "файл не читается" 2; fi
 
 outputName=$(grep -m 1 "Output:" "$abs_file" | sed 's/.*Output:[[:space:]]*//' || true)
 
-if [ -z "$outputName" ]; then die "не найден комментарий Output:" 3; fi
+if [ -z "$outputName" ]; then exceptions "не найден комментарий Output:" 3; fi
 
 tmpDir=$(mktemp -d)
 
 exit_handler() {
-    local rc=$?
+    rc=$?
     trap - EXIT
     rm -rf "$tmpDir"
     exit $rc
@@ -51,7 +54,7 @@ else
     exceptions "неизвестный формат файла" 5
 fi 
 
-mv "$outputName" "$src_dir/$outputName"
+mv "$outputName" "$otu_dir/$outputName"
 
 echo "Сборка завершена успешно"
 exit 0
