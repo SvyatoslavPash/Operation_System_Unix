@@ -1,6 +1,7 @@
 #!/bin/sh
 VOLUME_DIR="/data"
-LOCK_FILE="$VOLUME_DIR/lockfile"
+LOCK_FILE="$VOLUME_DIR/.lock"
+LOCK_FD=200
 
 exceptions(){
     echo "Ошибка: $1" >&2
@@ -26,16 +27,16 @@ trap exit_handler EXIT HUP INT QUIT PIPE TERM
 
 echo "Контейнер $CONTAINER_ID запущен."
 
+eval "exec ${LOCK_FD}>>\"\$LOCK_FILE\"" || exceptions "не удалось открыть lock_file $LOCK_FILE"
+
 while true; do
     FILE_COUNTER=$((FILE_COUNTER + 1))
-    
-    exec 200>"$LOCK_FILE" || exceptions "не удалось открыть lock_file $LOCK_FILE"
-    flock -x 200 || exceptions "не удалось захватить блокировку"
+
+    flock -x "$LOCK_FD" || exceptions "не удалось захватить блокировку"
 
     i=1
     while true; do
-        # 1 → "001", 2 → "002"
-        num=$(printf '%03d' $i)
+        num=$(printf '%03d' "$i")
         filename="$VOLUME_DIR/$num"
 
         if [ ! -e "$filename" ]; then
@@ -47,7 +48,7 @@ while true; do
         i=$((i + 1))
     done
 
-    exec 200>&-
+    flock -u "$LOCK_FD"
 
     sleep 1
 
