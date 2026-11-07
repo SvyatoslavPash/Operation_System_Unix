@@ -16,12 +16,9 @@ class EventData {
 }
 
 class Monitor {
-    // Предикат монитора. Переменная показывает, наступило ли событие.
-    private boolean ready = false;
-    // Хранит ссылку на текущее событие, которое ждет обработки
+    private volatile boolean ready = false;
     private EventData data = null;
 
-    // Метод поставщика.
     public synchronized void provide(EventData newData) {
         while (ready) {
             try {
