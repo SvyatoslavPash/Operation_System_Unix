@@ -1,5 +1,3 @@
-// Класс, который представляет само "событие" или
-// данные, передаваемые от поставщика к потребителю
 class EventData {
     private final int id;
     private final String message;
