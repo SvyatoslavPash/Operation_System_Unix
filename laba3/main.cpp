@@ -2,96 +2,131 @@
 #include <filesystem>
 #include <unordered_map>
 #include <fstream>
-#include <vector>
-#include <string>
-#include <iomanip>
 #include <sstream>
-#include <openssl/sha.h>
-#include <sys/stat.h>
+#include <iomanip>
+#include <openssl/evp.h>
+#include <unistd.h>
+#include <cstring>
+#include <cerrno>
+#include <cstdlib>
+#include <sys/stat.h> 
 
-namespace fs = std::filesystem;
+using namespace std;
+namespace fs = filesystem;
 
-std::string calculate_sha1(const fs::path& filepath) {
-	std::ifstream file(filepath, std::ios::binary);
-	if (!file) {
-		throw std::runtime_error("Не удалось открыть файл: " + filepath.string());
-	}
+// Функция обработки фатальных ошибок
+void die(const string& msg, int code = 1) {
+    cerr << "Ошибка: " << msg << "\n";
+    exit(code);
+}
 
-	SHA_CTX ctx;
-	SHA1_Init(&ctx);
-	std::vector<char> buffer(4096);
+// Функция для вычисления SHA-1 хэша файла
+string get_sha1(const fs::path& filepath) {
+    ifstream file(filepath, ios::binary);
+    if (!file) {
+        cerr << "Предупреждение: не удалось открыть " << filepath << "\n";
+        return "";
+    }
 
-	while (file) {
-		file.read(buffer.data(), buffer.size());
-		std::streamsize bytes = file.gcount();
-		if (bytes > 0) {
-			SHA1_Update(&ctx, buffer.data(), bytes);
-		}
-	}
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    if (!ctx) die("не удалось создать контекст EVP");
 
-	unsigned char hash[SHA_DIGEST_LENGTH];
-	SHA1_Final(hash, &ctx);
+    if (EVP_DigestInit_ex(ctx, EVP_sha1(), nullptr) != 1) {
+        EVP_MD_CTX_free(ctx);
+        die("не удалось инициализировать SHA-1");
+    }
 
-	std::ostringstream oss;
-	for (int i = 0; i < SHA_DIGEST_LENGTH; ++i) {
-		oss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
-	}
-	return oss.str();
+    char buffer[4096];
+    while (file.read(buffer, sizeof(buffer))) {
+        EVP_DigestUpdate(ctx, buffer, file.gcount());
+    }
+    if (file.gcount() > 0) {
+        EVP_DigestUpdate(ctx, buffer, file.gcount());
+    }
+
+    unsigned char hash[EVP_MAX_MD_SIZE];
+    unsigned int lengthOfHash = 0;
+
+    if (EVP_DigestFinal_ex(ctx, hash, &lengthOfHash) != 1) {
+        EVP_MD_CTX_free(ctx);
+        die("не удалось завершить хэширование");
+    }
+
+    EVP_MD_CTX_free(ctx);
+
+    stringstream ss;
+    for (unsigned int i = 0; i < lengthOfHash; ++i) {
+        ss << hex << setw(2) << setfill('0') << (int)hash[i];
+    }
+    return ss.str();
 }
 
 int main(int argc, char* argv[]) {
-	if (argc != 2) {
-		std::cerr << "Использование: " << argv[0] << " <путь_к_каталогу>\n";
-		return 1;
-	}
+    if (argc != 2) {
+        die("Использование: " + string(argv[0]) + " <директория>");
+    }
 
-	fs::path root_dir = argv[1];
-	if (!fs::exists(root_dir) || !fs::is_directory(root_dir)) {
-		std::cerr << "Ошибка: Указанный путь не является каталогом.\n";
-		return 1;
-	}
+    fs::path root_dir = argv[1];
 
-	std::unordered_map<std::string, fs::path> hash_map;
+    if (!fs::is_directory(root_dir)) {
+        die("директория " + root_dir.string() + " не существует");
+    }
 
-	for (const auto& entry : fs::recursive_directory_iterator(root_dir)) {
-		if (!entry.is_regular_file()) {
-			continue;
-		}
+    unordered_map<string, fs::path> hash_map;
+    int duplicates_found = 0;
 
-		fs::path current_path = entry.path();
+    cout << "Сканирую: " << root_dir << "...\n";
 
-		try {
-			std::string hash = calculate_sha1(current_path);
+    try {
+        for (const auto& entry : fs::recursive_directory_iterator(root_dir)) {
+            if (!fs::is_regular_file(entry.symlink_status())) continue;
 
-			if (hash_map.find(hash) != hash_map.end()) {
-				fs::path original_path = hash_map[hash];
+            fs::path filepath = entry.path();
+            string hash = get_sha1(filepath);
 
-				if (fs::equivalent(original_path, current_path)) {
-					continue;
-				}
+            if (hash.empty()) continue;
 
-				struct stat st_orig, st_curr;
-				stat(original_path.c_str(), &st_orig);
-				stat(current_path.c_str(), &st_curr);
+            if (hash_map.find(hash) != hash_map.end()) {
+                fs::path original = hash_map[hash];
+            
+                struct stat stat_orig, stat_dup;
+                if (stat(original.c_str(), &stat_orig) == 0 && 
+                    lstat(filepath.c_str(), &stat_dup) == 0) {
+                    
+                    if (stat_orig.st_dev == stat_dup.st_dev && 
+                        stat_orig.st_ino == stat_dup.st_ino) {
+                        continue;
+                    }
+                    if (stat_orig.st_dev != stat_dup.st_dev) {
+                        cerr << "Пропуск (разные ФС): " << filepath << "\n";
+                        continue;
+                    }
+                }
 
-				if (st_orig.st_dev != st_curr.st_dev) {
-					std::cerr << "Пропуск: нельзя создать жёсткую ссылку между разными ФС: " << current_path << "\n";
-					continue;
-				}
+                cout << "Найден дубликат: " << filepath << " == " << original << "\n";
 
-				std::cout << "Дубликат найден:\n" << " Оригинал: " << original_path << "\n" << " Ссылка: " << current_path << "\n";
+                fs::path tmp_path = filepath;
+                tmp_path += ".link.tmp";
 
-				fs::remove(current_path);
-				fs::create_hard_link(original_path, current_path);
-				std::cout << " -> Заменено на жесткую ссылку.\n";
-			} else {
-				hash_map[hash] = current_path;
-			}
-		} catch (const std::exception& e) {
-			std::cerr << "Ошибка при обработке " << current_path << ": " << e.what() << "\n";
-		}
-	}
+                if (link(original.c_str(), tmp_path.c_str()) == 0) {
+                    if (rename(tmp_path.c_str(), filepath.c_str()) == 0) {
+                        cout << "  -> Заменен на жесткую ссылку.\n";
+                        duplicates_found++;
+                    } else {
+                        cerr << "  -> Ошибка rename: " << strerror(errno) << "\n";
+                        unlink(tmp_path.c_str());
+                    }
+                } else {
+                    cerr << "  -> Ошибка link: " << strerror(errno) << "\n";
+                }
+            } else {
+                hash_map[hash] = filepath;
+            }
+        }
+    } catch (const fs::filesystem_error& e) {
+        cerr << "Ошибка обхода директории: " << e.what() << "\n";
+    }
 
-	std::cout << "Обработка завершена.\n";
-	return 0;
+    cout << "\nГотово. Обработано дубликатов: " << duplicates_found << "\n";
+    return 0;
 }
